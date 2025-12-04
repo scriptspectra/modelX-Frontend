@@ -91,7 +91,8 @@ const Dashboard: React.FC = () => {
   const [timeRange, setTimeRange] = React.useState("30d");
   const [currencies, setCurrencies] = React.useState<string[]>([]);
   const [selectedCurrency, setSelectedCurrency] = React.useState<string>("");
-  const [chartData, setChartData] = React.useState<RatePoint[]>([]);
+  const [compareCurrency, setCompareCurrency] = React.useState<string>("");
+  const [chartData, setChartData] = React.useState<Array<Record<string, any>>>([]);
   const [loading, setLoading] = React.useState(false);
 
   const mainNavItems: NavItem[] = [
@@ -132,29 +133,49 @@ const Dashboard: React.FC = () => {
     fetchCurrencies();
   }, []);
 
-  // fetch chart data when selectedCurrency or timeRange changes
+  // fetch chart data when selectedCurrency, compareCurrency, or timeRange changes
   React.useEffect(() => {
-    const fetchRates = async () => {
-      if (!selectedCurrency) return;
+    const fetchAndMerge = async () => {
+      if (!selectedCurrency) {
+        setChartData([]);
+        return;
+      }
       setLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/currency_rates/?currency=${encodeURIComponent(selectedCurrency)}&time_range=${encodeURIComponent(timeRange)}`);
-        const data = await res.json();
-        // backend returns [{date, rate}]
-        if (Array.isArray(data)) {
-          // normalize to {date, rate}
-          setChartData(data.map((d: any) => ({ date: d.date, rate: d.rate ?? d.exchange_rate_LKR ?? d.rate })));
-        } else {
-          setChartData([]);
-        }
+        const currenciesToFetch = [selectedCurrency];
+        if (compareCurrency && compareCurrency !== selectedCurrency) currenciesToFetch.push(compareCurrency);
+
+        const results = await Promise.all(currenciesToFetch.map((c) =>
+          fetch(`${API_BASE}/currency_rates/?currency=${encodeURIComponent(c)}&time_range=${encodeURIComponent(timeRange)}`).then(r => r.json()).catch(() => [])
+        ));
+
+        // results is array of arrays [{date, rate}, ...]
+        const dateMap: Record<string, Record<string, any>> = {};
+        results.forEach((series: any[], idx: number) => {
+          const cur = currenciesToFetch[idx];
+          if (!Array.isArray(series)) return;
+          series.forEach((p: any) => {
+            const date = p.date;
+            if (!date) return;
+            if (!dateMap[date]) dateMap[date] = { date };
+            // store by currency code so dataKey can be dynamic
+            dateMap[date][cur] = typeof p.rate === 'number' ? p.rate : Number(p.rate);
+          });
+        });
+
+        // create sorted array of dates ascending
+        const merged = Object.keys(dateMap).map(d => dateMap[d]);
+        merged.sort((a, b) => (new Date(a.date)).getTime() - (new Date(b.date)).getTime());
+
+        setChartData(merged);
       } catch (e) {
-        console.error("Failed to fetch rates", e);
+        console.error('Failed to fetch/merge rates', e);
         setChartData([]);
       }
       setLoading(false);
     };
-    fetchRates();
-  }, [selectedCurrency, timeRange]);
+    fetchAndMerge();
+  }, [selectedCurrency, compareCurrency, timeRange]);
 
   return (
     <div className="flex min-h-screen bg-black">
@@ -217,6 +238,17 @@ const Dashboard: React.FC = () => {
               </select>
 
               <select
+                value={compareCurrency}
+                onChange={(e) => setCompareCurrency(e.target.value)}
+                className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 text-sm focus:outline-none"
+              >
+                <option value="">Compare (none)</option>
+                {currencies.filter(c => c !== selectedCurrency).map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+
+              <select
                 value={timeRange}
                 onChange={(e) => setTimeRange(e.target.value)}
                 className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 text-sm focus:outline-none"
@@ -268,13 +300,32 @@ const Dashboard: React.FC = () => {
                   iconType="circle"
                   formatter={(value) => <span className="text-neutral-400 capitalize">{value}</span>}
                 />
-                <Area 
-                  type="natural" 
-                  dataKey="rate"
-                  stroke="#dc2626" 
-                  fill="url(#colorDesktop)" 
-                  strokeWidth={2}
-                />
+                {/* Primary series */}
+                {selectedCurrency && (
+                  <Area
+                    type="natural"
+                    dataKey={selectedCurrency}
+                    name={selectedCurrency}
+                    stroke="#dc2626"
+                    fill="#dc2626"
+                    fillOpacity={0.12}
+                    strokeWidth={2}
+                    connectNulls={true}
+                  />
+                )}
+                {/* Compare series (blue) */}
+                {compareCurrency && compareCurrency !== selectedCurrency && (
+                  <Area
+                    type="natural"
+                    dataKey={compareCurrency}
+                    name={compareCurrency}
+                    stroke="#2563eb"
+                    fill="#2563eb"
+                    fillOpacity={0.12}
+                    strokeWidth={2}
+                    connectNulls={true}
+                  />
+                )}
               </AreaChart>
             </ResponsiveContainer>
             {/* (debug panel removed) */}
